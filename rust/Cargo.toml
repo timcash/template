@@ -1,0 +1,13 @@
+[package]
+name = "template-json-math"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "template_json_math"
+path = "src/lib.rs"
+
+[[bin]]
+name = "json_math"
+path = "src/main.rs"

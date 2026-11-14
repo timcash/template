@@ -1,0 +1,9 @@
+bin/
+deploy/
+rust/target/
+ui/dist/
+ui/node_modules/
+python/__pycache__/
+*.pyc
+*.log
+logs/
