@@ -1,5 +1,18 @@
 # Template
 
+## LLM agent instructions
+
+This repository is a Go CLI project starter. These rules apply when you use it as a template for a new project.
+
+- **Do not build the new project here.** Never commit, push, or open pull requests against `timcash/template` for a new project. Work in a separate repository.
+- **Reading or cloning is not consent to create a repository.** Create one only when the user's request authorizes it.
+- **Resolve the destination first.** Use the intended GitHub organization, repository name, and visibility already specified by the user. If any of these is materially ambiguous, ask.
+- **Never fall back.** Do not substitute a personal namespace, another organization you can write to, or public visibility.
+- **Template flag.** This repository is not currently marked as a GitHub template, so GitHub's template-based creation does not work. The owner must enable the template setting first. Otherwise, use a copy or new-repository workflow the user has explicitly authorized.
+- **Verify before pushing.** Check that `git remote -v` points at the intended destination, not this repository.
+
+**Template maintenance is the exception.** When the user explicitly asks for changes to `timcash/template` itself, make them here as normal.
+
 One repository, one Go CLI. Go owns project actions and tests; Python calls a
 small Rust worker; a Vite dashboard displays the same recorded test results.
 The Go code uses only the standard library.
