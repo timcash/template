@@ -24,6 +24,7 @@ Actions:
   lint      Check Go, Python, Rust, and TypeScript sources
   format    Format Go and Rust sources
   build     Build the Go binary, Rust worker, and web UI
+  auth      Inspect provider authentication status without logging in
   test      Run the Go tests in cli_test.go
   clean     Remove generated local state
   deploy    Build and copy artifacts to deploy/local
@@ -31,6 +32,7 @@ Actions:
   help      Show this help
 
 Flags:
+  auth status [--json]     Report configured and verified auth state
   test --filter <regexp>   Run only the Go tests matching this pattern
   test --list              Print the selected test names without running them
   dev --port <port>        Serve the dashboard on another port
@@ -39,6 +41,10 @@ Run an action with "go run . <action>", or with "bin/template <action>" after bu
 `
 
 func Run(args []string, stdout, stderr io.Writer) int {
+	// Status/help remain independent of language toolchain discovery.
+	if len(args) > 0 && args[0] == "auth" {
+		return runAuth(args[1:], stdout, stderr)
+	}
 	if err := prepareToolPath(); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -491,4 +497,60 @@ func isHelp(value string) bool {
 
 func main() {
 	os.Exit(Run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+// AuthStatus is a nonsecret snapshot, not a credential or an authorization grant.
+// A project-specific provider adapter replaces authenticationStatus and verifies
+// the exact target through the provider's supported SDK/CLI with a bounded call.
+// Never infer Verified from an environment variable, a cached token's presence,
+// network reachability, or an unverified claim. Do not return raw provider errors.
+type AuthStatus struct {
+	Provider   string `json:"provider"`
+	Target     string `json:"target"`
+	Kind       string `json:"kind"`
+	Configured bool   `json:"configured"`
+	Verified   bool   `json:"verified"`
+	Status     string `json:"status"`
+	NextStep   string `json:"next_step"`
+}
+
+func authenticationStatus() AuthStatus {
+	return AuthStatus{Status: "not_configured", NextStep: "Implement a project-specific provider adapter with bounded verification for the intended target; then rerun auth status."}
+}
+
+const authUsage = `usage: template auth status [--json]
+       template auth help
+
+Report nonsecret authentication state. The stock template has no provider.
+This command does not read credentials, log in, open a browser, or change access.
+Exit 0: verified (or help); 1: not configured/unverified/unavailable; 2: usage.
+`
+
+func runAuth(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 || (len(args) == 1 && isHelp(args[0])) ||
+		(len(args) == 2 && args[0] == "status" && isHelp(args[1])) {
+		fmt.Fprint(stdout, authUsage)
+		return 0
+	}
+	jsonOutput := len(args) == 2 && args[1] == "--json"
+	if args[0] != "status" || (len(args) != 1 && !jsonOutput) {
+		// Do not echo arguments: an accidental secret may be present.
+		fmt.Fprint(stderr, authUsage)
+		return 2
+	}
+	status := authenticationStatus()
+	if jsonOutput {
+		if err := json.NewEncoder(stdout).Encode(status); err != nil {
+			fmt.Fprintln(stderr, "unable to write auth status")
+			return 1
+		}
+	} else {
+		if _, err := fmt.Fprintf(stdout, "auth: %s\nprovider: %s\ntarget: %s\nkind: %s\nconfigured: %t\nverified: %t\nnext: %s\n", status.Status, status.Provider, status.Target, status.Kind, status.Configured, status.Verified, status.NextStep); err != nil {
+			return 1
+		}
+	}
+	if status.Configured && status.Verified && status.Status == "verified" {
+		return 0
+	}
+	return 1
 }
