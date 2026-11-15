@@ -79,6 +79,23 @@ browser, contacts no network, saves no tokens, and changes no access.
 - **`python/` and `rust/`:** a typed Python client calls the Rust JSON arithmetic
   worker as a subprocess. No FFI or extra Python environment is required.
 
+## Install the dashboard as an app
+
+The dashboard has a web app manifest, 192/512-pixel PNG icons, and an Apple
+Touch icon. On Chromium, use the browser's **Install app** option when offered.
+On iPhone/iPad, open the page in Safari and use **Share → Add to Home Screen**, then turn on **Open as Web App**.
+It is online-only: no service worker or offline cache stores tests, logs, or
+authentication. Installing an icon does not grant login or network access.
+
+`TestWebUIInstallablePWA` is included in `go run . test`. It builds the real
+Vite output, starts a temporary loopback preview server, and checks the served
+entry page, manifest, same-origin start URL, icon bytes/dimensions and MIME types.
+This verifies the install metadata over HTTP, not a user's Home Screen tap or
+browser-specific installation UI. Localhost is a trustworthy local context;
+remote browser installation needs HTTPS and a separately authenticated host.
+The development server remains loopback-only. Do not expose its test-running API
+merely to install the PWA. A static build lacks the development test API.
+
 ## Make it yours
 
 Rename the module in `go.mod`, the Rust package/library and matching import in

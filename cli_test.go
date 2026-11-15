@@ -38,6 +38,11 @@ func TestUIUnitTests(t *testing.T) {
 	runTool(t, "npm", "--prefix", "ui", "test")
 }
 
+func TestWebUIInstallablePWA(t *testing.T) {
+	runTool(t, "npm", "--prefix", "ui", "run", "build")
+	runTool(t, "node", "--test", "ui/acceptance/pwa-install.mjs")
+}
+
 func TestPythonClient(t *testing.T) {
 	runPython(t, "-m", "unittest", "python.test_client.PythonClientTests")
 }
