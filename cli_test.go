@@ -38,6 +38,11 @@ func TestUIUnitTests(t *testing.T) {
 	runTool(t, "npm", "--prefix", "ui", "test")
 }
 
+func TestWebUIInstallablePWA(t *testing.T) {
+	runTool(t, "npm", "--prefix", "ui", "run", "build")
+	runTool(t, "node", "--test", "ui/acceptance/pwa-install.mjs")
+}
+
 func TestPythonClient(t *testing.T) {
 	runPython(t, "-m", "unittest", "python.test_client.PythonClientTests")
 }
@@ -456,4 +461,66 @@ func readTestStateFile(t *testing.T, root string) testState {
 		t.Fatal(err)
 	}
 	return state
+}
+
+func TestAuthStatusIsExplicitlyUnconfigured(t *testing.T) {
+	for _, args := range [][]string{{"auth", "status"}, {"auth", "status", "--json"}} {
+		var out, err bytes.Buffer
+		if code := Run(args, &out, &err); code != 1 {
+			t.Fatalf("%v: code %d, want 1", args, code)
+		}
+		if !strings.Contains(out.String(), "not_configured") {
+			t.Fatalf("missing status: %s", &out)
+		}
+		if len(args) == 3 {
+			var s struct {
+				Provider, Target, Kind, Status, NextStep string
+				Configured, Verified                     bool
+			}
+			var fields map[string]any
+			if e := json.Unmarshal(out.Bytes(), &fields); e != nil {
+				t.Fatal(e)
+			}
+			if e := json.Unmarshal(out.Bytes(), &s); e != nil {
+				t.Fatal(e)
+			}
+			if s.Configured || s.Verified || s.Provider != "" || s.Target != "" || s.Kind != "" {
+				t.Fatalf("false assurance: %+v", s)
+			}
+			next, ok := fields["next_step"].(string)
+			if !ok || next == "" || len(fields) != 7 {
+				t.Fatalf("invalid schema: %v", fields)
+			}
+		}
+	}
+}
+
+func TestAuthHelpAndUsage(t *testing.T) {
+	for _, args := range [][]string{{"auth"}, {"auth", "help"}, {"auth", "--help"}, {"auth", "status", "--help"}} {
+		var out, err bytes.Buffer
+		if code := Run(args, &out, &err); code != 0 || !strings.Contains(out.String(), "auth status") {
+			t.Fatalf("%v: code %d: %s %s", args, code, &out, &err)
+		}
+	}
+	for _, args := range [][]string{{"auth", "login"}, {"auth", "status", "--token", "sentinel-secret"}, {"auth", "status", "extra"}, {"auth", "help", "extra"}, {"auth", "status", "--json=garbage"}} {
+		var out, err bytes.Buffer
+		if code := Run(args, &out, &err); code != 2 {
+			t.Fatalf("%v: code %d, want 2", args, code)
+		}
+		if strings.Contains(out.String()+err.String(), "sentinel-secret") {
+			t.Fatal("echoed argument")
+		}
+	}
+}
+
+func TestAuthStatusIgnoresAmbientCredentialClaims(t *testing.T) {
+	t.Setenv("TEMPLATE_AUTH_TOKEN", "sentinel-secret")
+	t.Setenv("TEMPLATE_AUTH_VERIFIED", "true")
+	var out, err bytes.Buffer
+	if code := Run([]string{"auth", "status", "--json"}, &out, &err); code != 1 {
+		t.Fatal(code)
+	}
+	if strings.Contains(out.String()+err.String(), "sentinel-secret") || !strings.Contains(out.String(), `"verified":false`) {
+		t.Fatal("ambient claim trusted or leaked")
+	}
 }
