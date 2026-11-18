@@ -77,7 +77,11 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "template %s failed: %v\n", args[0], err)
+		if args[0] == "test" && !errors.Is(err, flag.ErrHelp) {
+			io.WriteString(stderr, humanRecord(time.Time{}, "ERROR", fmt.Sprintf("template test failed: %v", err)))
+		} else {
+			fmt.Fprintf(stderr, "template %s failed: %v\n", args[0], err)
+		}
 		return 1
 	}
 	return 0
@@ -186,10 +190,20 @@ func runBuild(stdout, stderr io.Writer) error {
 // UI start those tools themselves.
 func runTest(args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	flags.SetOutput(stderr)
+	var flagOutput strings.Builder
+	flags.SetOutput(&flagOutput)
 	filter := flags.String("filter", "", "Run only the Go tests matching this regular expression")
 	list := flags.Bool("list", false, "Print the selected test names without running them")
 	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			io.WriteString(stderr, flagOutput.String())
+		} else {
+			for _, line := range strings.Split(strings.TrimSuffix(flagOutput.String(), "\n"), "\n") {
+				if line != "" && line != err.Error() {
+					io.WriteString(stderr, humanRecord(time.Time{}, "INFO", line))
+				}
+			}
+		}
 		return err
 	}
 	if flags.NArg() != 0 {
@@ -219,7 +233,7 @@ func runTest(args []string, stdout, stderr io.Writer) error {
 	if err := writeTestState(root, &state); err != nil {
 		return err
 	}
-	return runGoTests(root, &state, *filter, stdout)
+	return runGoTests(root, &state, *filter, stdout, stderr)
 }
 
 func runClean(stdout io.Writer) error {

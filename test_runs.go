@@ -57,6 +57,7 @@ type testRunRecord struct {
 
 // goTestEvent is one line of `go test -json`.
 type goTestEvent struct {
+	Time    time.Time
 	Action  string
 	Test    string
 	Output  string
@@ -120,7 +121,7 @@ func writeTestState(root string, state *testState) error {
 
 // runGoTests runs the selected tests and turns the event stream into live
 // output, per-execution logs, and dashboard state.
-func runGoTests(root string, state *testState, pattern string, stdout io.Writer) error {
+func runGoTests(root string, state *testState, pattern string, stdout, stderr io.Writer) error {
 	args := []string{"test", "-json", "-count=1", "-timeout", goTestTimeout}
 	if pattern != "" {
 		args = append(args, "-run", pattern)
@@ -138,9 +139,16 @@ func runGoTests(root string, state *testState, pattern string, stdout io.Writer)
 		return err
 	}
 	failures, consumeErr := consumeGoTestEvents(root, state, events, stdout)
+	if consumeErr != nil {
+		_ = command.Process.Kill() // A stopped reader must not leave a blocked child.
+	}
 	waitErr := command.Wait()
-	if toolErrors.Len() > 0 {
-		fmt.Fprint(stdout, toolErrors.String())
+	for _, line := range strings.Split(toolErrors.String(), "\n") {
+		if line = strings.TrimRight(line, "\r"); line != "" {
+			if err := writeRecord(stderr, nil, humanRecord(time.Time{}, "INFO", "child stderr: "+line)); err != nil && consumeErr == nil {
+				consumeErr = err
+			}
+		}
 	}
 	if consumeErr != nil {
 		return consumeErr
@@ -155,23 +163,36 @@ func runGoTests(root string, state *testState, pattern string, stdout io.Writer)
 // Subtest output is folded into the log of the test that owns it.
 func consumeGoTestEvents(root string, state *testState, events io.Reader, stdout io.Writer) ([]string, error) {
 	active := map[string]*activeTest{}
+	defer func() {
+		for _, run := range active {
+			_ = run.log.Close()
+		}
+	}()
 	var failures []string
 	scanner := bufio.NewScanner(events)
 	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	for scanner.Scan() {
 		var event goTestEvent
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
-			fmt.Fprintln(stdout, scanner.Text())
+			if err := writeRecord(stdout, nil, humanRecord(time.Time{}, "WARN", "unrecognized Go test output: "+scanner.Text())); err != nil {
+				return failures, err
+			}
 			continue
 		}
 		owner := topLevelTest(event.Test)
 		switch event.Action {
-		case "output":
-			if _, err := io.WriteString(stdout, event.Output); err != nil {
-				return failures, err
+		case "output", "build-output":
+			// test2json combines the test binary's stdout and stderr. Only the
+			// separately captured Go command pipe has known stderr provenance.
+			label := "test output: "
+			if event.Action == "build-output" {
+				label = "build output: "
 			}
-			if run := active[owner]; run != nil {
-				if _, err := io.WriteString(run.log, event.Output); err != nil {
+			for _, line := range strings.Split(event.Output, "\n") {
+				if line = strings.TrimRight(line, "\r"); line == "" {
+					continue
+				}
+				if err := writeRecord(stdout, active[owner], humanRecord(event.Time, "INFO", label+line)); err != nil {
 					return failures, err
 				}
 			}
@@ -179,41 +200,53 @@ func consumeGoTestEvents(root string, state *testState, events io.Reader, stdout
 			if event.Test == "" || event.Test != owner {
 				continue
 			}
-			run, err := beginTestRun(root, state, owner)
+			run, err := beginTestRun(root, state, owner, event.Time)
 			if err != nil {
 				return failures, err
 			}
 			active[owner] = run
-			fmt.Fprintf(stdout, "=== TEST-ID %s %s\n", owner, run.record.TestID)
+			if err := writeRecord(stdout, run, humanRecord(event.Time, "INFO", fmt.Sprintf("=== TEST-ID %s %s", owner, run.record.TestID))); err != nil {
+				return failures, err
+			}
 		case "pass", "fail", "skip":
 			run := active[owner]
 			if run == nil || event.Test == "" || event.Test != owner {
 				continue
 			}
-			delete(active, owner)
-			if err := finishTestRun(root, state, run, event.Action, event.Elapsed); err != nil {
+			level := "INFO"
+			if event.Action == "fail" {
+				level = "ERROR"
+			} else if event.Action == "skip" {
+				level = "WARN"
+			}
+			if err := writeRecord(stdout, run, humanRecord(event.Time, level, fmt.Sprintf("test %s %s (%.3fs)", owner, event.Action, event.Elapsed))); err != nil {
 				return failures, err
 			}
+			if err := finishTestRun(root, state, run, event.Action, event.Elapsed, event.Time); err != nil {
+				return failures, err
+			}
+			delete(active, owner)
 			if event.Action == "fail" {
 				failures = append(failures, owner)
 			}
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return failures, err
-	}
 	// A panic or a killed process can end the stream mid-test. Close the books
 	// so no row is left running forever.
 	for name, run := range active {
-		if err := finishTestRun(root, state, run, "fail", time.Since(run.started).Seconds()); err != nil {
+		if err := writeRecord(stdout, run, humanRecord(time.Time{}, "ERROR", fmt.Sprintf("test %s ended without a Go result", name))); err != nil {
 			return failures, err
 		}
+		if err := finishTestRun(root, state, run, "fail", time.Since(run.started).Seconds(), time.Time{}); err != nil {
+			return failures, err
+		}
+		delete(active, name)
 		failures = append(failures, name)
 	}
-	return failures, nil
+	return failures, scanner.Err()
 }
 
-func beginTestRun(root string, state *testState, name string) (*activeTest, error) {
+func beginTestRun(root string, state *testState, name string, when time.Time) (*activeTest, error) {
 	var random [16]byte
 	if _, err := rand.Read(random[:]); err != nil {
 		return nil, err
@@ -226,10 +259,13 @@ func beginTestRun(root string, state *testState, name string) (*activeTest, erro
 	if err != nil {
 		return nil, err
 	}
-	started := time.Now().UTC()
+	started := time.Now()
+	if when.IsZero() {
+		when = started
+	}
 	entry := state.entry(name)
 	entry.Status, entry.TestID = "running", id
-	entry.Timestamp, entry.Elapsed = started.Format(time.RFC3339Nano), "0"
+	entry.Timestamp, entry.Elapsed = when.UTC().Format(time.RFC3339Nano), "0"
 	run := &activeTest{name: name, log: log, started: started, record: testRunRecord{
 		TestID:    id,
 		Name:      name,
@@ -251,7 +287,7 @@ func beginTestRun(root string, state *testState, name string) (*activeTest, erro
 	return run, nil
 }
 
-func finishTestRun(root string, state *testState, run *activeTest, action string, elapsed float64) error {
+func finishTestRun(root string, state *testState, run *activeTest, action string, elapsed float64, when time.Time) error {
 	status := "fail"
 	if action == "pass" || action == "skip" {
 		status = action
@@ -260,7 +296,10 @@ func finishTestRun(root string, state *testState, run *activeTest, action string
 	entry := state.entry(run.name)
 	entry.Status, entry.Elapsed = status, seconds
 	run.record.Status, run.record.Elapsed = status, seconds
-	run.record.CompletedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if when.IsZero() {
+		when = time.Now()
+	}
+	run.record.CompletedAt = when.UTC().Format(time.RFC3339Nano)
 	if err := run.log.Close(); err != nil {
 		return err
 	}
