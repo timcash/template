@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestInstallDependencies(t *testing.T) {
@@ -109,6 +110,26 @@ func TestTestActionWillNotRunInsideItself(t *testing.T) {
 	}
 }
 
+func TestTestUsageErrorsAreStructuredAndHelpUnchanged(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"test", "--invalid-flag"}, &stdout, &stderr); code != 1 || stdout.Len() != 0 {
+		t.Fatalf("invalid test option: exit %d, stdout %q", code, stdout.String())
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(stderr.String(), "\n"), "\n") {
+		fields := strings.SplitN(line, " ", 4)
+		if len(fields) != 4 || !strings.HasSuffix(fields[0], "Z") || !strings.HasPrefix(fields[2], "cli.go:") {
+			t.Fatalf("unstructured test diagnostic: %q", line)
+		}
+	}
+	if !strings.Contains(stderr.String(), " ERROR cli.go:") || !strings.Contains(stderr.String(), "flag provided but not defined") {
+		t.Fatalf("missing failure error: %s", &stderr)
+	}
+	stderr.Reset()
+	if code := Run([]string{"test", "--help"}, &stdout, &stderr); code != 1 || !strings.HasPrefix(stderr.String(), "Usage of test:") {
+		t.Fatalf("test help contract changed: exit %d, stderr %q", code, stderr.String())
+	}
+}
+
 func TestGoTestOutputDrivesRunState(t *testing.T) {
 	root := t.TempDir()
 	state := newTestState([]string{"TestAlpha", "TestBeta"})
@@ -176,23 +197,110 @@ func TestEachRunKeepsItsOwnLog(t *testing.T) {
 		`{"Action":"pass","Test":"TestOnly","Elapsed":0.1}`,
 	}, "\n")
 
-	var ids []string
+	var ids, originalLogs []string
 	for execution := 1; execution <= 2; execution++ {
 		state := newTestState([]string{"TestOnly"})
 		if _, err := consumeGoTestEvents(root, &state, strings.NewReader(stream), &bytes.Buffer{}); err != nil {
 			t.Fatal(err)
 		}
 		ids = append(ids, state.Tests[0].TestID)
+		originalLogs = append(originalLogs, readFileString(t, filepath.Join(root, "logs", ids[len(ids)-1]+".log")))
 	}
 	if ids[0] == ids[1] {
 		t.Fatal("the rerun reused the first execution ID")
 	}
-	for _, id := range ids {
+	for index, id := range ids {
 		if record := readRunRecord(t, root, id); record.TestID != id || record.Status != "pass" {
 			t.Fatalf("an earlier run record was overwritten: %+v", record)
 		}
-		if log := readFileString(t, filepath.Join(root, "logs", id+".log")); log != "EXECUTION\n" {
+		if log := readFileString(t, filepath.Join(root, "logs", id+".log")); log != originalLogs[index] || !strings.Contains(log, "EXECUTION") {
 			t.Fatalf("an earlier run log was overwritten: %q", log)
+		}
+	}
+}
+
+func TestGoTestLogsHaveTimeLevelSourceAndMessage(t *testing.T) {
+	root := t.TempDir()
+	state := newTestState([]string{"TestPass", "TestFail"})
+	var stdout bytes.Buffer
+	events := strings.Join([]string{
+		`{"Time":"2026-11-18T07:00:00.125-08:00","Action":"run","Test":"TestPass"}`,
+		`{"Time":"2026-11-18T07:00:01.125-08:00","Action":"output","Test":"TestPass","Output":"    sample_test.go:27: logged at source\n"}`,
+		`{"Time":"2026-11-18T07:00:02.125-08:00","Action":"output","Test":"TestPass/sub","Output":"child line\nsecond line\n"}`,
+		`{"Time":"2026-11-18T07:00:03.125-08:00","Action":"pass","Test":"TestPass","Elapsed":0.25}`,
+		`{"Action":"run","Test":"TestFail"}`,
+		`{"Action":"output","Test":"TestFail","Output":"child error text is not severity\n"}`,
+		`{"Action":"fail","Test":"TestFail","Elapsed":0.5}`,
+		`{"Action":"build-output","Output":"compiler diagnostic\n"}`,
+		`not-json transport diagnostic`,
+	}, "\n")
+	if failures, err := consumeGoTestEvents(root, &state, strings.NewReader(events), &stdout); err != nil || len(failures) != 1 {
+		t.Fatalf("failures = %v, err = %v", failures, err)
+	}
+	logs := []string{stdout.String()}
+	for _, entry := range readTestStateFile(t, root).Tests {
+		record := readRunRecord(t, root, entry.TestID)
+		if record.Name != entry.Name || record.Artifact != "logs/"+entry.TestID+".log" {
+			t.Fatalf("wrong dashboard artifact: %+v / %+v", entry, record)
+		}
+		logs = append(logs, readFileString(t, filepath.Join(root, record.Artifact)))
+	}
+	for _, log := range logs {
+		for _, line := range strings.Split(strings.TrimSuffix(log, "\n"), "\n") {
+			fields := strings.SplitN(line, " ", 4)
+			if len(fields) != 4 || !strings.HasSuffix(fields[0], "Z") || (fields[1] != "INFO" && fields[1] != "ERROR" && fields[1] != "WARN") || !strings.Contains(fields[2], ".go:") || fields[3] == "" {
+				t.Fatalf("unformatted output: %q", line)
+			}
+			if _, err := time.Parse(time.RFC3339Nano, fields[0]); err != nil {
+				t.Fatalf("invalid UTC timestamp on %q: %v", line, err)
+			}
+		}
+	}
+	for _, marker := range []string{
+		"2026-11-18T15:00:01.125Z INFO test_runs.go:", "child stdout:     sample_test.go:27: logged at source",
+		"child stdout: child line", "child stdout: second line", "compiler diagnostic", "transport diagnostic",
+	} {
+		if !strings.Contains(logs[0], marker) {
+			t.Errorf("stdout missing %q: %s", marker, logs[0])
+		}
+	}
+	if !strings.Contains(logs[1], "child stdout: second line") || strings.Contains(logs[1], "child error text") || !strings.Contains(logs[2], " ERROR ") || !strings.Contains(logs[2], "child stdout: child error text is not severity") {
+		t.Fatalf("misattributed or incorrectly linked output: %q", logs[1:])
+	}
+}
+
+func TestGoTestRunnerRecordsRealPassingAndFailingTests(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, filepath.Join(root, "go.mod"), "module example.invalid/logfixture\n\ngo 1.24\n")
+	writeFixture(t, filepath.Join(root, "sample_test.go"), `package logfixture
+import ("fmt"; "testing")
+func TestPass(t *testing.T) { fmt.Println("plain child message"); t.Log("passing body") }
+func TestFail(t *testing.T) { t.Fatal("expected fixture failure") }
+`)
+	state := newTestState([]string{"TestPass", "TestFail"})
+	var stdout, stderr bytes.Buffer
+	if err := runGoTests(root, &state, "", &stdout, &stderr); err == nil || !strings.Contains(err.Error(), "1 test(s) failed: TestFail") {
+		t.Fatalf("unexpected run result: %v; stderr: %s", err, &stderr)
+	}
+	for _, entry := range readTestStateFile(t, root).Tests {
+		record := readRunRecord(t, root, entry.TestID)
+		content := readFileString(t, filepath.Join(root, record.Artifact))
+		var own, other, status string
+		if entry.Name == "TestPass" {
+			own, other, status = "plain child message", "expected fixture failure", "pass"
+		} else {
+			own, other, status = "expected fixture failure", "plain child message", "fail"
+		}
+		if entry.Status != status || record.Status != status || !strings.Contains(content, own) || strings.Contains(content, other) {
+			t.Fatalf("log belongs to wrong run: %+v %+v %q", entry, record, content)
+		}
+		if status == "fail" && (!strings.Contains(content, " ERROR test_runs.go:") || !strings.Contains(content, "sample_test.go:4:")) {
+			t.Fatalf("failure missing lifecycle severity or relayed Go source hint: %q", content)
+		}
+		for _, line := range strings.Split(strings.TrimSuffix(content, "\n"), "\n") {
+			if !strings.Contains(stdout.String(), line+"\n") {
+				t.Fatalf("saved record missing from human stdout: %q", line)
+			}
 		}
 	}
 }

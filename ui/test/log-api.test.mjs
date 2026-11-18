@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
@@ -16,9 +16,13 @@ test("the dashboard serves generated state and per-execution logs", async (conte
   await mkdir(logsDir);
   const firstId = "a".repeat(32);
   const secondId = "b".repeat(32);
+  const firstLog = "2026-01-01T00:00:01Z INFO test_runs.go:120 first execution output\n";
+  const secondStart = "2026-01-01T00:00:01Z INFO test_runs.go:120 second execution output\n";
+  const secondFailure = "2026-01-01T00:00:02Z ERROR test_runs.go:135 second execution failed\n";
+  const secondLog = secondStart + secondFailure;
   for (const [id, status, log] of [
-    [firstId, "pass", "first execution output\n"],
-    [secondId, "running", "second execution output\n"],
+    [firstId, "pass", firstLog],
+    [secondId, "running", secondStart],
   ]) {
     await writeFile(
       resolve(logsDir, `${id}.json`),
@@ -81,16 +85,24 @@ test("the dashboard serves generated state and per-execution logs", async (conte
     return (await response.json()).run;
   };
   const details = await readRun(firstId);
-  assert.equal(details.log, "first execution output\n");
+  assert.equal(details.log, firstLog);
   assert.equal(details.name, "TestPythonClient");
   assert.match(details.command, /--filter/);
-  assert.equal((await readRun(secondId)).status, "running");
-  await writeFile(resolve(logsDir, `${secondId}.log`), "second execution output\nmore live output\n");
-  assert.match((await readRun(secondId)).log, /more live output/);
+  assert.equal((await readRun(secondId)).log, secondStart);
+  await appendFile(resolve(logsDir, `${secondId}.log`), secondFailure);
+  assert.equal((await readRun(secondId)).log, secondLog);
+  const secondRecord = resolve(logsDir, `${secondId}.json`);
+  const activeRun = JSON.parse(await readFile(secondRecord, "utf8"));
+  await writeFile(secondRecord, JSON.stringify({ ...activeRun, status: "fail" }));
+  const failed = await readRun(tests[0]["test-id"]);
+  assert.equal(failed.status, "fail");
+  assert.equal(failed.artifact, `logs/${secondId}.log`);
+  assert.equal(failed.log, secondLog);
   assert.equal((await readRun(firstId))["test-id"], firstId);
   const raw = await fetch(`${base}/api/test-runs/${firstId}/log`);
   assert.equal(raw.headers.get("content-type"), "text/plain; charset=utf-8");
-  assert.equal(await raw.text(), "first execution output\n");
+  assert.equal(await raw.text(), firstLog);
+  assert.equal(await (await fetch(`${base}/api/test-runs/${secondId}/log`)).text(), secondLog);
   assert.equal((await fetch(`${base}/api/test-runs/${"c".repeat(32)}`)).status, 404);
   assert.equal((await fetch(`${base}/api/test-runs/not-a-run`)).status, 400);
   assert.equal((await fetch(`${base}/api/test-runs/..%2Fstate.json`)).status, 400);

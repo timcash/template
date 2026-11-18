@@ -86,6 +86,13 @@ browser, contacts no network, saves no tokens, and changes no access.
 - **`test_runs.go`:** `test` consumes `go test -json`. Each execution gets a
   unique ID and immutable `logs/<test-id>.json` and `.log` files. A rerun keeps
   old logs. Direct `go test` works but skips this recording.
+- **`human_logs.go`:** test output and its saved text logs use
+  `UTC_TIMESTAMP LEVEL file.go:line message`. The timestamp comes from the Go
+  test event when available, and the file and line identify the collector that
+  emitted the record. `child stdout:` and `child stderr:` identify relayed text;
+  any original source hints stay in the message and do not set its log level.
+  A test failure has its own `ERROR` record. The test list, auth JSON, and
+  dashboard JSON/URLs are unchanged.
 - **`ui/`:** Vite reads `logs/state.json` produced by the CLI. Cards show the
   test title, running/pass/fail, elapsed time, and a per-run Log link. The local
   Start tests button invokes the same CLI; visiting does not start work.
