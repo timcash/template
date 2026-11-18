@@ -182,11 +182,17 @@ func consumeGoTestEvents(root string, state *testState, events io.Reader, stdout
 		owner := topLevelTest(event.Test)
 		switch event.Action {
 		case "output", "build-output":
+			// test2json combines the test binary's stdout and stderr. Only the
+			// separately captured Go command pipe has known stderr provenance.
+			label := "test output: "
+			if event.Action == "build-output" {
+				label = "build output: "
+			}
 			for _, line := range strings.Split(event.Output, "\n") {
 				if line = strings.TrimRight(line, "\r"); line == "" {
 					continue
 				}
-				if err := writeRecord(stdout, active[owner], humanRecord(event.Time, "INFO", "child stdout: "+line)); err != nil {
+				if err := writeRecord(stdout, active[owner], humanRecord(event.Time, "INFO", label+line)); err != nil {
 					return failures, err
 				}
 			}

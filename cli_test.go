@@ -257,14 +257,14 @@ func TestGoTestLogsHaveTimeLevelSourceAndMessage(t *testing.T) {
 		}
 	}
 	for _, marker := range []string{
-		"2026-11-18T15:00:01.125Z INFO test_runs.go:", "child stdout:     sample_test.go:27: logged at source",
-		"child stdout: child line", "child stdout: second line", "compiler diagnostic", "transport diagnostic",
+		"2026-11-18T15:00:01.125Z INFO test_runs.go:", "test output:     sample_test.go:27: logged at source",
+		"test output: child line", "test output: second line", "build output: compiler diagnostic", "transport diagnostic",
 	} {
 		if !strings.Contains(logs[0], marker) {
 			t.Errorf("stdout missing %q: %s", marker, logs[0])
 		}
 	}
-	if !strings.Contains(logs[1], "child stdout: second line") || strings.Contains(logs[1], "child error text") || !strings.Contains(logs[2], " ERROR ") || !strings.Contains(logs[2], "child stdout: child error text is not severity") {
+	if !strings.Contains(logs[1], "test output: second line") || strings.Contains(logs[1], "child error text") || !strings.Contains(logs[2], " ERROR ") || !strings.Contains(logs[2], "test output: child error text is not severity") {
 		t.Fatalf("misattributed or incorrectly linked output: %q", logs[1:])
 	}
 }
@@ -273,8 +273,8 @@ func TestGoTestRunnerRecordsRealPassingAndFailingTests(t *testing.T) {
 	root := t.TempDir()
 	writeFixture(t, filepath.Join(root, "go.mod"), "module example.invalid/logfixture\n\ngo 1.24\n")
 	writeFixture(t, filepath.Join(root, "sample_test.go"), `package logfixture
-import ("fmt"; "testing")
-func TestPass(t *testing.T) { fmt.Println("plain child message"); t.Log("passing body") }
+import ("fmt"; "os"; "testing")
+func TestPass(t *testing.T) { fmt.Println("test stdout marker"); fmt.Fprintln(os.Stderr, "test stderr marker"); t.Log("passing body") }
 func TestFail(t *testing.T) { t.Fatal("expected fixture failure") }
 `)
 	state := newTestState([]string{"TestPass", "TestFail"})
@@ -287,9 +287,12 @@ func TestFail(t *testing.T) { t.Fatal("expected fixture failure") }
 		content := readFileString(t, filepath.Join(root, record.Artifact))
 		var own, other, status string
 		if entry.Name == "TestPass" {
-			own, other, status = "plain child message", "expected fixture failure", "pass"
+			own, other, status = "test output: test stdout marker", "expected fixture failure", "pass"
+			if !strings.Contains(content, "test output: test stderr marker") {
+				t.Fatalf("test-binary stderr was not recorded as merged test output: %q", content)
+			}
 		} else {
-			own, other, status = "expected fixture failure", "plain child message", "fail"
+			own, other, status = "expected fixture failure", "test stdout marker", "fail"
 		}
 		if entry.Status != status || record.Status != status || !strings.Contains(content, own) || strings.Contains(content, other) {
 			t.Fatalf("log belongs to wrong run: %+v %+v %q", entry, record, content)
@@ -302,6 +305,9 @@ func TestFail(t *testing.T) { t.Fatal("expected fixture failure") }
 				t.Fatalf("saved record missing from human stdout: %q", line)
 			}
 		}
+	}
+	if strings.Contains(stderr.String(), "test stderr marker") {
+		t.Fatalf("test-binary stderr was mistaken for the Go command's own stderr: %q", stderr.String())
 	}
 }
 
