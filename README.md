@@ -17,6 +17,24 @@ One repository, one Go CLI. Go owns project actions and tests; Python calls a
 small Rust worker; a Vite dashboard displays the same recorded test results.
 The Go code uses only the standard library.
 
+## Install the CLI (single command)
+
+Install the `template` binary into `~/.local/bin` (macOS/Linux) or `%USERPROFILE%\.local\bin` (Windows) without changing shell profiles or system `PATH`:
+
+**macOS / Linux:**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/timcash/template/main/install.sh | sh
+```
+
+**Windows PowerShell:**
+
+```powershell
+irm https://raw.githubusercontent.com/timcash/template/main/install.ps1 | iex
+```
+
+Without a pinned version, the installer downloads the `main` source archive over HTTPS, builds `template` with Go 1.24+, and installs it atomically. To install a SHA-256-verified prebuilt release binary when tags are published, pass `--version vX.Y.Z` / `-Version vX.Y.Z` (or set `TEMPLATE_VERSION=vX.Y.Z`). Override the destination with `--install-dir` / `-InstallDir` (or `TEMPLATE_INSTALL_DIR`).
+
 ## Get started
 
 Install Git, Go 1.24 or newer (the module selects Go 1.26.2), Node 22.12+ and npm,
@@ -26,9 +44,9 @@ Rust/cargo/rustfmt, and Python 3 using their official installers. Keep them on
 ```sh
 git clone --depth 1 https://github.com/timcash/template.git my-project
 cd my-project
-go run . install
-go run . test
-go run . dev
+./template.sh install     # Windows PowerShell: .\template.ps1 install
+./template.sh test        # Windows PowerShell: .\template.ps1 test
+./template.sh dev         # Windows PowerShell: .\template.ps1 dev
 ```
 
 Cloning gets the source; `install` downloads language dependencies and UI
@@ -38,8 +56,7 @@ until **Start tests** is clicked. Stop the development server with Ctrl+C.
 
 ## CLI
 
-Run from the repository root. After `build`, `bin/template` (Windows:
-`bin/template.exe`) accepts the same actions.
+Run from the repository root with `./template.sh <action>` (macOS/Linux), `.\template.ps1 <action>` (Windows PowerShell), or `go run . <action>`. The wrapper scripts run `bin/template` (`bin/template.exe`) when built and fall back to `go run .`.
 
 ```sh
 go run . help                         # commands and flags
@@ -112,8 +129,10 @@ merely to install the PWA. A static build lacks the development test API.
 ## Make it yours
 
 Rename the module in `go.mod`, the Rust package/library and matching import in
-`rust/Cargo.toml` and `rust/src/main.rs`, and the package in `ui/package.json`.
-Keep the help/README and contract tests aligned as commands are added.
+`rust/Cargo.toml` and `rust/src/main.rs`, the package in `ui/package.json`, the
+wrapper scripts (`template.sh` / `template.ps1`), and the repository URLs in
+`install.sh` / `install.ps1`. Keep the help/README and contract tests aligned as
+commands are added.
 
 `deploy` does not publish online. The loopback development dashboard is not an
 authenticated network service. Do not expose it as one. The UI uses grayscale,
